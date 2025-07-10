@@ -1,7 +1,6 @@
 (function() {
     console.log('✅ pendingModeration.ve.js start');
 
-    // Ожидаем инициализации VE
     const initInterval = setInterval(() => {
         if (window.ve && ve.ui && ve.ui.MWMediaDialog) {
             clearInterval(initInterval);
@@ -12,35 +11,54 @@
     function applyPatches() {
         console.log('✅ VE is ready, applying custom patches');
 
-        // Сохраняем оригинальный метод
+        // Полное отключение системных уведомлений о модерации
+        // if (ve.init && ve.init.Target && ve.init.Target.prototype.showNotification) {
+        //     const origShowNotification = ve.init.Target.prototype.showNotification;
+        //     ve.init.Target.prototype.showNotification = function(message) {
+        //         if (message.message === 'moderation-image-queued') {
+        //             console.log('⚠️ Suppressed system notification');
+        //             return;
+        //         }
+        //         origShowNotification.call(this, message);
+        //     };
+        // }
+
+        // Блокировка системных уведомлений
+        // if (ve.ui.MWUploadBookletLayout && ve.ui.MWUploadBookletLayout.prototype.onUploadError) {
+        //     const origOnUploadError = ve.ui.MWUploadBookletLayout.prototype.onUploadError;
+        //     ve.ui.MWUploadBookletLayout.prototype.onUploadError = function(error) {
+        //         if (error === 'moderation-image-queued') {
+        //             console.log('⚠️ Suppressed system notification');
+        //             return;
+        //         }
+        //         origOnUploadError.call(this, error);
+        //     };
+        // }
+
         const origSetup = ve.ui.MWMediaDialog.prototype.getSetupProcess;
 
-        // Переопределяем процесс настройки
         ve.ui.MWMediaDialog.prototype.getSetupProcess = function(data) {
             return origSetup.call(this, data)
                 .next(() => {
-                    // Добавляем обработчики после инициализации
                     if (this.mediaUploadBooklet) {
                         console.log('✅ Attaching upload event handlers');
 
-                        // Перехватываем создание объекта upload
                         const origCreateUpload = this.mediaUploadBooklet.createUpload;
 
                         this.mediaUploadBooklet.createUpload = function() {
                             const upload = origCreateUpload.call(this);
-                            const booklet = this; // Сохраняем контекст BookletLayout
+                            const booklet = this;
 
-                            // Перехватываем метод finishStashUpload
                             const origFinishStashUpload = upload.finishStashUpload;
 
                             upload.finishStashUpload = function(filekey, filename) {
+                                console.log('37:', filekey, filename);
                                 return origFinishStashUpload.call(this, filekey, filename)
                                     .then(response => {
                                         console.log('⚙️ Upload finished', response);
 
-                                        // Если файл отправлен на модерацию
                                         if (response.upload && response.moderation === 'pending') {
-                                            // Используем booklet.emit вместо this.emit
+                                            response.result.type = 'pending';
                                             booklet.emit('uploadModerated', response);
                                         }
                                         return response;
@@ -48,15 +66,29 @@
                                     .catch(error => {
                                         console.log('⚙️ Upload error', error);
 
-                                        // Если ошибка модерации
                                         if (error === 'moderation-image-queued') {
-                                            // Используем booklet.emit вместо this.emit
-                                            console.log(booklet.upload);
+                                            let filename = '';
+                                            let filekey = '';
+
+                                            if (booklet.upload) {
+                                                console.log('moderation-image-queue', booklet.upload);
+                                                filename = booklet.upload.filename || '';
+
+                                                if (booklet.upload.stateDetails &&
+                                                    booklet.upload.stateDetails.errors &&
+                                                    booklet.upload.stateDetails.errors[0] &&
+                                                    booklet.upload.stateDetails.errors[0].data) {
+
+                                                    const errorData = booklet.upload.stateDetails.errors[0].data;
+                                                    filekey = errorData.filekey || errorData.sessionkey || '';
+                                                }
+                                            }
+
                                             booklet.emit('uploadModerated', {
                                                 error: true,
                                                 result: {
-                                                    filename: booklet.upload.filename,
-                                                    filekey: booklet.upload.stateDetails.errors[0].data.filekey || booklet.upload.stateDetails.errors[0].data.sessionkey
+                                                    filename: filename,
+                                                    filekey: filekey
                                                 }
                                             });
                                         }
@@ -67,87 +99,130 @@
                             return upload;
                         }.bind(this.mediaUploadBooklet);
 
-                        // Обработчик для модерации
                         this.mediaUploadBooklet.on('uploadModerated', (response) => {
                             console.log('🔄 Upload moderated', response);
-
-                            let data = {};
-
-                            if (response.error) {
-                                // Обработка ошибки
-                                const errorData = response.result;
-                                data = {
-                                    fileName: errorData.filename,
-                                    moderationTempUrl: 'https://wiki.test/images/thumb/0/00/%d0%af%d1%81%d1%84%d0%b2%d0%b0%d0%b2%d0%b0%d1%83%d1%86%d0%b0%d0%b9%d1%83.jpg/120px-%d0%af%d1%81%d1%84%d0%b2%d0%b0%d0%b2%d0%b0%d1%83%d1%86%d0%b0%d0%b9%d1%83.jpg' //+ errorData.filekey
-                                };
-                            } else {
-                                // Обработка успешного ответа
-                                data = {
-                                    fileName: response.upload.filename,
-                                    moderationTempUrl: response.moderationTempUrl
-                                };
-                            }
-
-                            this.showPendingUpload(data);
+                            this.showPendingUpload(response);
                         });
                     }
                 });
         };
 
-        // Метод для показа интерфейса модерации
-        ve.ui.MWMediaDialog.prototype.showPendingUpload = function(data) {
-            console.log('🔄 Showing pending upload interface', data);
+        ve.ui.MWMediaDialog.prototype.showPendingUpload = function(response) {
+            console.log('🔄 Showing pending upload interface', response);
 
-            console.log(this);
+            // Сохраняем контекст диалога
+            const dialog = this;
 
-            // Переключаем на страницу информации
-            this.switchPanels('imageInfo');
+            // Форматируем данные
+            const data = response.error ? {
+                fileName: response.result.filename,
+                moderationTempUrl: 'https://wiki.test/images/moderation-icon.jpg'
+            } : {
+                fileName: response.upload.filename,
+                moderationTempUrl: 'https://wiki.test/images/moderation-icon.jpg'
+            };
 
-            // Очищаем контейнер
-            this.$infoPanelWrapper.empty();
+            // Используем специальный класс для нашего контейнера
+            const containerClass = 'moderation-pending-container';
 
-            // Создаем элементы интерфейса
-            const $container = $('<div>').addClass('moderation-pending-container');
+            // Удаляем предыдущий контейнер, если есть
+            $(`.${containerClass}`).remove();
 
-            // Превью файла
+            // Создаем новый контейнер
+            const $container = $('<div>').addClass(containerClass)
+                .css({
+                    padding: '20px',
+                    textAlign: 'center',
+                    backgroundColor: '#fff',
+                    borderRadius: '4px',
+                    boxShadow: '0 2px 10px rgba(0,0,0,0.1)',
+                    zIndex: 1000,
+                    position: 'relative'
+                });
+
+            // Добавляем превью
             if (data.moderationTempUrl) {
                 $container.append(
-                    $('<div>')
-                        .css({textAlign: 'center', margin: '1em 0'})
-                        .append(
-                            $('<img>')
-                                .attr('src', data.moderationTempUrl)
-                                .css({maxWidth: '100%', maxHeight: '150px'})
-                        )
+                    $('<div>').css({margin: '0 auto 15px', maxWidth: '200px'}).append(
+                        $('<img>')
+                            .attr('src', data.moderationTempUrl)
+                            .css({
+                                maxWidth: '100%',
+                                maxHeight: '150px',
+                                display: 'block',
+                                margin: '0 auto'
+                            })
+                    )
                 );
             }
 
-            // Сообщение
+            // Добавляем сообщение
             $container.append(
                 $('<div>')
                     .addClass('moderation-pending-message')
+                    .css({
+                        fontSize: '1.2em',
+                        marginBottom: '20px',
+                        color: '#333'
+                    })
                     .text('Ваш файл отправлен на модерацию')
             );
 
-            // Кнопка (если есть имя файла)
+            // Добавляем кнопку
             if (data.fileName) {
                 $container.append(
                     $('<button>')
                         .addClass('oo-ui-buttonElement-button oo-ui-buttonElement-button-primary')
+                        .css({
+                            margin: '10px auto',
+                            display: 'block',
+                            padding: '8px 20px',
+                            fontSize: '1em',
+                            cursor: 'pointer'
+                        })
                         .text('Вставить ссылку')
                         .on('click', () => {
-                            const surface = this.getFragment().getSurface();
-                            surface.execute('insertContent', `[[File:${data.fileName}]]`);
-                            this.close();
+                            // Основной способ: через target.getSurface()
+                            const target = dialog.target;
+
+                            if (target && target.getSurface) {
+                                const surface = target.getSurface();
+
+                                if (surface && surface.execute) {
+                                    try {
+                                        surface.execute('insertContent', `[[File:${data.fileName}]]`);
+                                        dialog.close();
+                                        return;
+                                    } catch (e) {
+                                        console.error('Error executing surface.insertContent', e);
+                                    }
+                                }
+                            }
+
+                            // Альтернативный способ: через fragment.insertContent()
+                            if (dialog.getFragment && dialog.getFragment().insertContent) {
+                                try {
+                                    dialog.getFragment().insertContent(`[[File:${data.fileName}]]`);
+                                    dialog.close();
+                                    return;
+                                } catch (e) {
+                                    console.error('Error executing fragment.insertContent', e);
+                                }
+                            }
+
+                            // Крайний вариант: prompt
+                            prompt('Скопируйте ссылку на файл', `[[File:${data.fileName}]]`);
+                            dialog.close();
                         })
                 );
             }
 
-            // Добавляем в интерфейс
-            this.$infoPanelWrapper.append($container);
+            // Вставляем контейнер в диалог
+            this.$body.append($container);
 
             // Обновляем заголовок
-            this.title.setLabel('Файл на модерации');
+            this.title.setLabel('Файл на модерации!');
+            console.log('✅ Custom UI added to dialog body');
         };
     }
 })();
