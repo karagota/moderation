@@ -182,37 +182,56 @@
                         })
                         .text('Вставить ссылку')
                         .on('click', () => {
-                            // Основной способ: через target.getSurface()
-                            const target = dialog.target;
-
-                            if (target && target.getSurface) {
-                                const surface = target.getSurface();
-
-                                if (surface && surface.execute) {
-                                    try {
-                                        surface.execute('insertContent', `[[File:${data.fileName}]]`);
-                                        dialog.close();
-                                        return;
-                                    } catch (e) {
-                                        console.error('Error executing surface.insertContent', e);
+                            const fileName = data.fileName;
+                            
+                            try {
+                                // Через fragment.insertContent с полной структурой
+                                const fileNode = {
+                                    type: 'mwFile',
+                                    attributes: {
+                                        mediaClass: 'File',
+                                        href: `./File:${fileName}`,
+                                        resource: `File:${fileName}`,
+                                        filename: fileName,
+                                        title: `File:${fileName}`,
+                                        mediaType: 'UNKNOWN',
+                                        mime: 'unknown/unknown'
                                     }
-                                }
+                                };
+                                
+                                const contentToInsert = [
+                                    {
+                                        type: 'paragraph',
+                                        children: [
+                                            {
+                                                type: 'mwInlineExtension',
+                                                attributes: {
+                                                    name: 'file',
+                                                    body: {
+                                                        extended: [
+                                                            {
+                                                                html: `<span>${fileName}</span>`,
+                                                                _type: 'mw:Extension/wikitext'
+                                                            }
+                                                        ]
+                                                    },
+                                                    content: fileNode
+                                                }
+                                            },
+                                            { type: '/mwInlineExtension' }
+                                        ]
+                                    },
+                                    { type: '/paragraph' }
+                                ];
+                                
+                                dialog.getFragment().insertContent(contentToInsert);
+                                dialog.close();
+                            } catch (e) {
+                                console.error('getFragment().insertContent failed', e);
+                                // Способ 2: Резервный вариант
+                                prompt('Скопируйте ссылку на файл', `[[File:${fileName}]]`);
+                                dialog.close();
                             }
-
-                            // Альтернативный способ: через fragment.insertContent()
-                            if (dialog.getFragment && dialog.getFragment().insertContent) {
-                                try {
-                                    dialog.getFragment().insertContent(`[[File:${data.fileName}]]`);
-                                    dialog.close();
-                                    return;
-                                } catch (e) {
-                                    console.error('Error executing fragment.insertContent', e);
-                                }
-                            }
-
-                            // Крайний вариант: prompt
-                            prompt('Скопируйте ссылку на файл', `[[File:${data.fileName}]]`);
-                            dialog.close();
                         })
                 );
             }
